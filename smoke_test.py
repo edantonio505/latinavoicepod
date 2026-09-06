@@ -42,7 +42,7 @@ if not h["ok"]:
 
 for i, texto in enumerate(FRASES, 1):
     t0 = time.perf_counter(); first = None; pcm = b""; sr = h["sample_rate"]
-    r = post("/speak", {"text": texto})
+    r = post("/speak/stream", {"text": texto})
     for raw in r:
         line = raw.decode().strip()
         if not line.startswith("data:"):

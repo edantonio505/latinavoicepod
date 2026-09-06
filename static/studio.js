@@ -352,7 +352,7 @@ async function speak() {
   abortCtl = new AbortController();
 
   try {
-    const res = await api('/speak', {
+    const res = await api('/speak/stream', {
       method: 'POST', signal: abortCtl.signal,
       headers: { 'Content-Type': 'application/json', 'Accept': 'text/event-stream' },
       body: JSON.stringify({ text, voice: $('voiceSelect').value || undefined }),

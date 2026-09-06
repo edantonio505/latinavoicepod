@@ -50,9 +50,10 @@ coding agents.
 | `GET /health` | is the model in memory yet, which voices, what sample rate |
 | `GET /voices` | the reference clips this instance serves, keyed by language |
 | `GET /voices/detail` | the same, with reference transcripts, for humans |
-| `POST /speak` | SSE stream of base64 int16 PCM chunks |
-| `POST /speak/stream` | the same handler, under the name miniclosedai calls |
-| `POST /speak.wav` | one WAV file back |
+| `POST /speak` | one WAV file back (miniclosedai-voice reference contract) |
+| `POST /speak/stream` | SSE stream of base64 int16 PCM chunks — what miniclosedai calls for chat-reply playback |
+| `POST /speak.wav` | same as `/speak`, kept as the plainer curl-friendly name |
+| `GET /api/connect-info` | self-description for miniclosedai's Settings "paste this URL" flow |
 | `GET /studio/` | the voice studio GUI (`/` redirects here) |
 
 Voice management lives under `/api/…` — upload, analyse, delete. Full reference
@@ -65,8 +66,8 @@ curl -X POST localhost:8000/speak.wav \
   --output hola.wav
 ```
 
-Streaming frames look like this — chunks arrive as they are generated, so a
-caller can start playing before the sentence is finished:
+`POST /speak/stream` frames look like this — chunks arrive as they are
+generated, so a caller can start playing before the sentence is finished:
 
 ```
 data: {"chunk_b64":"…","sample_rate":48000,"chunk":1}

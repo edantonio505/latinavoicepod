@@ -49,13 +49,32 @@ the socket answers long before generation is possible.
   "voices": ["carla", "es_f_19", "romina"],
   "default_voice": "es_f_19",
   "optimize": false,
-  "loaded_at": 1757174400.12
+  "loaded_at": 1757174400.12,
+  "relay_capable": false
 }
 ```
 
 `ok` is `false` while the weights are still loading, and every `/speak*` call
 returns `503` until it flips. **`ok:true` is the only trustworthy readiness
 signal** — see the warning in [deployment](deployment.md#waiting-for-readiness).
+
+`relay_capable` is always `false` — this service is TTS-only (no ASR, no
+`/call/*`, no `/webrtc/offer`), matching the miniclosedai-voice reference
+shape so miniclosedai never routes it into call-mode.
+
+## `GET /api/connect-info`
+
+Self-description for miniclosedai's Settings → Add endpoint "paste this URL"
+flow — mirrors miniclosedai-voice's own `/api/connect-info`.
+
+```json
+{
+  "kind": "voice",
+  "base_url": "https://<pod-id>-8000.proxy.runpod.net",
+  "alt_base_url": "http://host.docker.internal:8000",
+  "auth_required": false
+}
+```
 
 ## `GET /voices`
 
@@ -82,12 +101,17 @@ The human-readable version, including each clip's reference transcript.
 }
 ```
 
-## `POST /speak` · `POST /speak/stream`
+## `POST /speak/stream`
 
-The same handler on two paths. `/speak/stream` is what miniclosedai calls;
-`/speak` is the plainer name. Streams Server-Sent Events as audio is produced.
+What miniclosedai calls for chat-reply TTS playback. Streams Server-Sent
+Events as audio is produced.
 
-Request body:
+`POST /speak` and `POST /speak.wav` are a separate, one-shot handler — see
+below — matching the miniclosedai-voice reference contract that Voice
+Studio's "Sample"/"Test…" buttons expect (a playable `audio/wav` blob, not
+an SSE stream).
+
+Request body (same shape for all three routes):
 
 | Field | Type | Required | Notes |
 |---|---|---|---|
@@ -97,7 +121,7 @@ Request body:
 | `speed` | number | no | **accepted and ignored** — miniclosedai sends it and VoxCPM2 has no speed control; rejecting it would fail the request |
 
 ```bash
-curl -N -X POST localhost:8000/speak \
+curl -N -X POST localhost:8000/speak/stream \
   -H 'Content-Type: application/json' \
   -d '{"text":"Buenas tardes, ¿hablo con el señor Benítez?"}'
 ```
@@ -148,12 +172,15 @@ for raw in urllib.request.urlopen(req):
         break
 ```
 
-## `POST /speak.wav`
+## `POST /speak` · `POST /speak.wav`
 
-Same request body, one WAV file back (`audio/wav`, 16-bit mono). Blocking: the
-whole utterance is generated before the first byte is sent, so it has no
-streaming advantage — but it is honest about that, and it survives a buffering
-proxy unchanged.
+Same handler mounted on both paths. `/speak` is the miniclosedai-voice
+reference contract's one-shot endpoint (what Voice Studio's "Sample"/"Test…"
+buttons call, expecting a directly-playable blob back); `/speak.wav` is the
+plainer curl-friendly name. Same request body, one WAV file back (`audio/wav`,
+16-bit mono). Blocking: the whole utterance is generated before the first
+byte is sent, so it has no streaming advantage — but it is honest about that,
+and it survives a buffering proxy unchanged.
 
 ```bash
 curl -X POST localhost:8000/speak.wav \

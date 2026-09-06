@@ -3,7 +3,12 @@
 Endpoints:
     GET  /health          — is the model in memory yet
     GET  /voices          — reference clips this instance serves
-    POST /speak           — SSE stream of base64 int16 PCM chunks
+    GET  /api/connect-info — self-description for miniclosedai's Settings UI
+    POST /speak           — one WAV file (same behavior as /speak.wav) —
+                             matches the miniclosedai-voice reference contract,
+                             which miniclosedai's Voice Studio "Sample"/"Test…"
+                             buttons rely on getting a playable blob back from
+    POST /speak/stream    — SSE stream of base64 int16 PCM chunks
     POST /speak.wav       — one WAV file, for curl and quick listening
 
 The SSE shape matches what the Mozart demo's player already consumes:
@@ -16,12 +21,14 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+import os
 import queue
+import socket
 from concurrent.futures import ThreadPoolExecutor
 import time
 from typing import Optional
 
-from fastapi import Depends, FastAPI, Header, HTTPException
+from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field
@@ -78,6 +85,50 @@ async def health():
         "default_voice": config.DEFAULT_VOICE,
         "optimize": config.OPTIMIZE,
         "loaded_at": engine.loaded_at,
+        # Matches the miniclosedai-voice reference shape. Always false here —
+        # this service is TTS-only (no ASR, no /call/*, no /webrtc/offer), so
+        # it must never be routed into miniclosedai's call-mode branch, which
+        # gates on this exact field.
+        "relay_capable": False,
+    }
+
+
+def _lan_ip() -> str:
+    """Best-effort primary LAN IP of this host. Same approach as
+    miniclosedai-voice/server.py's own helper — opens a throwaway UDP socket
+    toward a public address so the kernel picks the real outbound interface,
+    no packet actually sent."""
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            s.connect(("8.8.8.8", 80))
+            return s.getsockname()[0]
+        finally:
+            s.close()
+    except OSError:
+        return ""
+
+
+@app.get("/api/connect-info")
+async def connect_info(request: Request):
+    """Self-description for miniclosedai's "paste this URL" Settings flow —
+    mirrors miniclosedai-voice/server.py's own /api/connect-info."""
+    host_override = (
+        os.environ.get("LATINA_PUBLIC_HOST")
+        or os.environ.get("PUBLIC_HOST")
+        or os.environ.get("ADVERTISE_HOST")
+    )
+    pod = os.environ.get("RUNPOD_POD_ID")
+    if pod and not host_override:
+        base_url = f"https://{pod}-{config.PORT}.proxy.runpod.net"
+    else:
+        host = host_override or _lan_ip() or "localhost"
+        base_url = f"{request.url.scheme}://{host}:{config.PORT}"
+    return {
+        "kind": "voice",
+        "base_url": base_url,
+        "alt_base_url": f"http://host.docker.internal:{config.PORT}",
+        "auth_required": bool(config.API_KEY),
     }
 
 
@@ -105,13 +156,16 @@ async def voices_detail():
             "sample_rate": engine.sample_rate}
 
 
-@app.post("/speak", dependencies=[Depends(require_key)])
 @app.post("/speak/stream", dependencies=[Depends(require_key)])
-async def speak(req: SpeakRequest):
-    """Stream audio as it is generated.
+async def speak_stream(req: SpeakRequest):
+    """Stream audio as it is generated. This is what miniclosedai's voice
+    client calls for chat-reply playback (`voice.speak_stream()`).
 
-    Mounted at both paths on purpose: `/speak/stream` is what miniclosedai's
-    voice client calls, `/speak` is the plainer name everything else uses.
+    NOTE: `/speak` (below) is deliberately NOT an alias of this handler —
+    it returns one `audio/wav` body instead, matching the miniclosedai-voice
+    reference contract that miniclosedai's Voice Studio "Sample"/"Test…"
+    buttons expect. An earlier version aliased both paths to this streaming
+    handler; that broke those buttons, which `new Audio()` the raw SSE text.
     """
     if not engine.is_ready:
         return JSONResponse({"error": "model still loading"}, status_code=503)
@@ -172,9 +226,13 @@ async def speak(req: SpeakRequest):
                                       "X-Accel-Buffering": "no"})
 
 
+@app.post("/speak", dependencies=[Depends(require_key)])
 @app.post("/speak.wav", dependencies=[Depends(require_key)])
 async def speak_wav(req: SpeakRequest):
-    """One WAV back. Handy for `curl ... --output out.wav` and for listening."""
+    """One WAV back. Mounted at both paths: `/speak` is the miniclosedai-voice
+    reference contract's one-shot endpoint (Voice Studio's "Sample"/"Test…"
+    buttons `new Audio()` this response directly); `/speak.wav` is handy for
+    `curl ... --output out.wav` and for listening."""
     if not engine.is_ready:
         return JSONResponse({"error": "model still loading"}, status_code=503)
     try:

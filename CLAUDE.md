@@ -65,8 +65,8 @@ generation cap or a subprocess you can kill.
 **Sample rate is 48 kHz**, from VoxCPM2's audiovae_v2. Do not assume 22050 or
 24000; read it from `/health` or the `sample_rate` field on each chunk.
 
-**Streaming is easy to break and the failure is silent.** `/speak` uses a plain
-daemon thread writing to a plain `queue.Queue`, consumed with
+**Streaming is easy to break and the failure is silent.** `/speak/stream` uses
+a plain daemon thread writing to a plain `queue.Queue`, consumed with
 `await asyncio.to_thread(q.get)`. Two more obvious approaches were measured and
 both delivered every chunk at the end instead of as produced — draining the
 generator with `list(...)` inside `asyncio.to_thread`, and bridging onto a
