@@ -1,0 +1,22 @@
+# Install torch FIRST, matched to the host's CUDA. It is deliberately not
+# pinned here because the right wheel depends on the GPU:
+#
+#   CUDA 12.x  pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu124
+#   CUDA 13.x  pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu130
+#
+# Then: pip install -r requirements.txt
+
+voxcpm>=2.0.3
+fastapi>=0.110
+uvicorn[standard]>=0.29
+pydantic>=2.0
+numpy>=1.24
+
+# Voice studio (the web GUI). soundfile and librosa already arrive transitively
+# via voxcpm; declaring them removes a hidden dependency on another package's
+# requirements. python-multipart is what FastAPI needs for file uploads — and it
+# is checked at decorator time, so without it the studio module fails to import
+# (which latina/api.py catches, disabling the GUI rather than the service).
+python-multipart>=0.0.9
+soundfile>=0.12
+librosa>=0.10

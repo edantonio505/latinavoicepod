@@ -1,0 +1,291 @@
+# HTTP API reference
+
+Base URL is `http://<host>:8000` unless you changed `LATINA_PORT`. Everything
+below is served by one process holding one model.
+
+Two surfaces live here and they have different stability guarantees:
+
+- **Frozen** — `/health`, `/voices`, `/voices/detail`, `/speak`, `/speak/stream`,
+  `/speak.wav`. External consumers depend on these exact shapes. See
+  [Wire protocol](#wire-protocol-what-must-not-change).
+- **Studio** — everything under `/api/…`, plus the `/studio/` page. Added with
+  the GUI, kept off the frozen namespace on purpose, and disabled entirely when
+  `LATINA_STUDIO=0`.
+
+## Authentication
+
+`LATINA_API_KEY` is empty by default and then **no endpoint requires auth**.
+Set it and every protected endpoint demands an exact header:
+
+```
+Authorization: Bearer <LATINA_API_KEY>
+```
+
+| Endpoint | Protected when a key is set |
+|---|---|
+| `GET /health`, `GET /voices`, `GET /voices/detail` | no — always open |
+| `GET /api/studio` | no — the page reads it to learn whether to ask for a key |
+| `POST /speak`, `/speak/stream`, `/speak.wav` | yes |
+| every other `/api/…` route | yes |
+
+A wrong or missing token returns `401` with `{"detail": "bad or missing bearer token"}`.
+The comparison is a plain string equality against `Bearer <key>`.
+
+CORS is wide open (`allow_origins=["*"]`) so a browser page on any origin can
+call the service.
+
+---
+
+## `GET /health`
+
+Liveness *and* readiness. The model loads in a background thread at startup, so
+the socket answers long before generation is possible.
+
+```json
+{
+  "ok": true,
+  "model": "openbmb/VoxCPM2",
+  "sample_rate": 48000,
+  "voices": ["carla", "es_f_19", "romina"],
+  "default_voice": "es_f_19",
+  "optimize": false,
+  "loaded_at": 1757174400.12
+}
+```
+
+`ok` is `false` while the weights are still loading, and every `/speak*` call
+returns `503` until it flips. **`ok:true` is the only trustworthy readiness
+signal** — see the warning in [deployment](deployment.md#waiting-for-readiness).
+
+## `GET /voices`
+
+Catalog **keyed by language**, because that is the shape miniclosedai's
+voice-backend client registers against.
+
+```json
+{"es": [{"id": "es_f_19", "name": "es f 19", "gender": null}]}
+```
+
+`name` is the id with underscores replaced by spaces. `gender` is always `null`
+— nothing in the project infers it.
+
+## `GET /voices/detail`
+
+The human-readable version, including each clip's reference transcript.
+
+```json
+{
+  "voices": [{"id": "es_f_19", "reference_text": "promover y apoyar el empleo…"}],
+  "default": "es_f_19",
+  "language": "es",
+  "sample_rate": 48000
+}
+```
+
+## `POST /speak` · `POST /speak/stream`
+
+The same handler on two paths. `/speak/stream` is what miniclosedai calls;
+`/speak` is the plainer name. Streams Server-Sent Events as audio is produced.
+
+Request body:
+
+| Field | Type | Required | Notes |
+|---|---|---|---|
+| `text` | string | yes | 1–4000 characters |
+| `voice` | string | no | any id from `/voices`; defaults to `LATINA_VOICE` |
+| `language` | string | no | accepted, currently unused by the engine |
+| `speed` | number | no | **accepted and ignored** — miniclosedai sends it and VoxCPM2 has no speed control; rejecting it would fail the request |
+
+```bash
+curl -N -X POST localhost:8000/speak \
+  -H 'Content-Type: application/json' \
+  -d '{"text":"Buenas tardes, ¿hablo con el señor Benítez?"}'
+```
+
+Audio frames, one per generated chunk:
+
+```
+data: {"chunk_b64":"…","sample_rate":48000,"chunk":1}
+```
+
+Terminal frame, exactly once, carrying **both** terminator keys:
+
+```
+data: {"done":true,"end":true,"chunks":7,"ms":3120}
+```
+
+Error frame — generation failed mid-stream, after HTTP 200 was already sent:
+
+```
+data: {"error":"RuntimeError: …"}
+```
+
+`chunk_b64` is base64 of **little-endian signed 16-bit PCM, mono**, at
+`sample_rate` Hz. Read the rate from the frame rather than hardcoding it; it is
+48000 today because that is VoxCPM2's `audiovae_v2` output rate.
+
+The response sets `Cache-Control: no-cache` and `X-Accel-Buffering: no`, which
+asks an nginx-style proxy not to buffer. Not every proxy honours it — see
+[the RunPod proxy note](deployment.md#the-runpod-http-proxy-buffers-sse).
+
+Decoding a stream in Python:
+
+```python
+import base64, json, urllib.request
+req = urllib.request.Request(
+    "http://localhost:8000/speak",
+    data=json.dumps({"text": "Hola."}).encode(),
+    headers={"Content-Type": "application/json"})
+pcm = b""
+for raw in urllib.request.urlopen(req):
+    line = raw.decode().strip()
+    if not line.startswith("data:"):
+        continue
+    ev = json.loads(line[5:])
+    if ev.get("chunk_b64"):
+        pcm += base64.b64decode(ev["chunk_b64"])
+    elif ev.get("done"):
+        break
+```
+
+## `POST /speak.wav`
+
+Same request body, one WAV file back (`audio/wav`, 16-bit mono). Blocking: the
+whole utterance is generated before the first byte is sent, so it has no
+streaming advantage — but it is honest about that, and it survives a buffering
+proxy unchanged.
+
+```bash
+curl -X POST localhost:8000/speak.wav \
+  -H 'Content-Type: application/json' \
+  -d '{"text":"Hola."}' --output hola.wav
+```
+
+## Status codes on the speak endpoints
+
+| Code | Meaning |
+|---|---|
+| `200` | streaming (SSE) or the WAV body |
+| `401` | `LATINA_API_KEY` set and the bearer token did not match |
+| `404` | `{"error": "unknown voice 'x'; available: [...]"}` |
+| `422` | body failed validation (empty `text`, over 4000 chars) |
+| `503` | `{"error": "model still loading"}` |
+
+Note that a failure *during* generation cannot change the status code — the
+stream has already started, so it arrives as an `error` frame instead.
+
+---
+
+## Studio API
+
+All under `/api/…`, all requiring the bearer token when one is set, except
+`GET /api/studio`. Present only when the studio loaded; see
+[architecture](architecture.md#the-studio-is-detachable-on-purpose).
+
+### `GET /api/studio`
+
+Configuration for the page — limits, bounds and whether to prompt for a key.
+
+```json
+{
+  "auth_required": false,
+  "sample_rate": 48000,
+  "default_voice": "es_f_19",
+  "language": "es",
+  "max_upload_bytes": 20971520,
+  "max_voices": 50,
+  "max_text_chars": 4000,
+  "duration_bounds": [1.5, 30.0],
+  "recommended_duration": [4.0, 15.0],
+  "model_band_hz": 8000,
+  "stored_sample_rate": 24000
+}
+```
+
+### `GET /api/studio/auth`
+
+Returns `{"ok": true}` if the supplied key is valid. The page uses it to
+validate a key before storing it.
+
+### `GET /api/studio/voices`
+
+```json
+{"voices": [{"id": "es_f_19", "reference_text": "…", "is_default": true}],
+ "default": "es_f_19"}
+```
+
+### `POST /api/voices/analyze`
+
+Multipart. Measures a clip **without saving it**, so the verdict lands before
+the commit.
+
+| Field | Type | Notes |
+|---|---|---|
+| `file` | file | wav/flac/ogg via libsndfile; webm/opus, m4a/aac via ffmpeg |
+| `normalize` | bool | peak-normalise to −3 dBFS before measuring |
+
+Returns `{analysis, grade, errors, warnings, checks}` — see
+[voices](voices.md#what-the-analyser-measures) for every field and threshold.
+
+### `POST /api/voices/upload`
+
+Multipart, `201` on success. Same fields as analyze, plus:
+
+| Field | Type | Notes |
+|---|---|---|
+| `voice_id` | string | slugified; falls back to the filename stem |
+| `transcript` | string | the reference text — optional but improves cloning |
+| `overwrite` | bool | required to replace an existing id |
+
+Returns the analysis payload plus `id` and the refreshed `voices` list. The
+registry is rebuilt immediately, so the new voice appears in `/voices` **without
+a restart**.
+
+| Code | Meaning |
+|---|---|
+| `413` | larger than `LATINA_STUDIO_MAX_UPLOAD_MB` |
+| `409` | id exists and `overwrite` was not set |
+| `507` | `LATINA_STUDIO_MAX_VOICES` reached |
+| `422` | undecodable, or the analyser returned hard errors |
+
+### `GET /api/voices/{id}/audio`
+
+The stored reference clip as `audio/wav`.
+
+### `GET /api/voices/{id}/analysis`
+
+Grades a clip already in the library. Cached on `(path, mtime, size)`, so
+repeated calls are free until the file changes.
+
+### `PUT /api/voices/{id}/transcript`
+
+```json
+{"reference_text": "what the clip actually says, verbatim"}
+```
+
+Writes `<id>.txt` atomically; an empty string deletes it. Returns
+`{"id": …, "reference_text": …}`.
+
+### `DELETE /api/voices/{id}`
+
+Moves `<id>.wav` and `<id>.txt` into `voices/.trash/` with a timestamp suffix
+rather than unlinking them. Returns `{deleted, moved_to_trash, voices}`.
+
+Refused with `409` in two cases: the id is the configured `LATINA_VOICE`, or it
+is the last remaining voice.
+
+---
+
+## Wire protocol: what must not change
+
+Two consumers depend on the exact shapes above, and both fail *silently* —
+by hanging, not by erroring — if they change:
+
+- **miniclosedai** (`voice.py`) calls `GET /voices` expecting a dict keyed by
+  language, then `POST /speak/stream`, stopping when it sees `{"done": true}`.
+- **The Mozart demo's page** stops on `{"end": true}`.
+
+So the terminal frame carries both keys. Emit only one and the other client
+waits forever for a terminator that never comes. `/voices` stays language-keyed
+because that is what registration reads; `/voices/detail` exists to hold the
+human-readable extras that would otherwise tempt someone to reshape `/voices`.

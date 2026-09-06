@@ -1,0 +1,64 @@
+#!/usr/bin/env python3
+"""Smoke test. Run it against a live service:
+
+    python smoke_test.py                       # http://localhost:8000
+    python smoke_test.py https://host:8000     # anywhere else
+
+Writes out.wav so you can actually listen, and prints the latency that matters
+for a phone call: time to the FIRST audio chunk, not to the last.
+"""
+import base64, json, struct, sys, time, urllib.request
+
+BASE = (sys.argv[1] if len(sys.argv) > 1 else "http://localhost:8000").rstrip("/")
+KEY = None
+FRASES = [
+    "Buenas tardes, ¿hablo con el señor Benítez?",
+    "Tiene un vencimiento de hace cuarenta y cinco días por un millón "
+    "ochocientos cincuenta mil guaraníes.",
+    "Novecientos veinticinco mil cada una. La primera este mes, la segunda "
+    "el mes que viene, misma fecha.",
+]
+
+
+def post(path, payload):
+    req = urllib.request.Request(
+        f"{BASE}{path}", data=json.dumps(payload).encode(),
+        headers={"Content-Type": "application/json",
+                 **({"Authorization": f"Bearer {KEY}"} if KEY else {})})
+    return urllib.request.urlopen(req, timeout=300)
+
+
+def wav(pcm, sr):
+    n = len(pcm)
+    return (b"RIFF" + struct.pack("<I", 36+n) + b"WAVE" + b"fmt " +
+            struct.pack("<IHHIIHH", 16, 1, 1, sr, sr*2, 2, 16) +
+            b"data" + struct.pack("<I", n) + pcm)
+
+
+h = json.load(urllib.request.urlopen(f"{BASE}/health", timeout=30))
+print(f"  health: ok={h['ok']} voices={h['voices']} sr={h['sample_rate']}")
+if not h["ok"]:
+    sys.exit("  model still loading — wait and retry")
+
+for i, texto in enumerate(FRASES, 1):
+    t0 = time.perf_counter(); first = None; pcm = b""; sr = h["sample_rate"]
+    r = post("/speak", {"text": texto})
+    for raw in r:
+        line = raw.decode().strip()
+        if not line.startswith("data:"):
+            continue
+        ev = json.loads(line[5:])
+        if ev.get("error"):
+            sys.exit(f"  ERROR: {ev['error']}")
+        if ev.get("chunk_b64"):
+            if first is None:
+                first = (time.perf_counter()-t0)*1000
+            pcm += base64.b64decode(ev["chunk_b64"]); sr = ev["sample_rate"]
+    total = (time.perf_counter()-t0)*1000
+    dur = len(pcm)/2/sr
+    print(f"  [{i}] first audio {first:6.0f} ms · total {total:6.0f} ms · "
+          f"{dur:4.1f}s audio · RTF {(total/1000)/dur:.2f}")
+    if i == 1:
+        open("out.wav", "wb").write(wav(pcm, sr))
+        print("      wrote out.wav — listen to it")
+print("  OK")

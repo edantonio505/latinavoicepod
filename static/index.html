@@ -1,0 +1,176 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Latina Voice Studio</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text y='26' font-size='26'>🎙️</text></svg>">
+<link rel="stylesheet" href="studio.css">
+</head>
+<body>
+
+<header class="bar">
+  <h1>Latina&nbsp;Voice&nbsp;Studio</h1>
+  <div class="bar-right">
+    <button id="healthPill" class="pill pill-load" type="button">
+      <span class="dot"></span><span id="healthText">connecting…</span>
+    </button>
+    <button id="keyBtn" class="ghost" type="button" hidden>🔒 <span id="keyState">key</span></button>
+  </div>
+</header>
+
+<div id="banner" class="banner" hidden></div>
+
+<main class="studio">
+
+  <!-- ── left: voice library ────────────────────────────────────────────── -->
+  <section class="panel" id="railPanel">
+    <h2>Voices</h2>
+    <div id="voiceList" class="voices"></div>
+
+    <div class="add-block">
+      <button id="addBtn" class="primary wide" type="button">+ Add voice</button>
+      <div id="drop" class="drop">
+        <p><strong>Drag an audio file here</strong></p>
+        <p class="muted">wav · mp3 · flac · ogg · m4a · webm</p>
+        <div class="drop-actions">
+          <button id="pickBtn" class="ghost" type="button">Choose file…</button>
+          <button id="recBtn" class="ghost" type="button">● Record</button>
+        </div>
+        <p id="recNote" class="muted tiny" hidden></p>
+      </div>
+      <input id="fileInput" type="file" accept="audio/*,.wav,.mp3,.m4a,.ogg,.flac,.webm" hidden>
+    </div>
+  </section>
+
+  <!-- ── right: synthesize / analyse ────────────────────────────────────── -->
+  <section class="panel" id="workPanel">
+
+    <!-- synthesize -->
+    <div id="speakView">
+      <h2>Synthesize</h2>
+      <label class="lbl" for="voiceSelect">Voice</label>
+      <select id="voiceSelect"></select>
+
+      <label class="lbl" for="text">Text</label>
+      <textarea id="text" rows="4" maxlength="4000"
+        placeholder="Buenas tardes, ¿hablo con el señor Benítez?"></textarea>
+      <div class="row between">
+        <div class="chips" id="phraseChips"></div>
+        <span class="muted tiny" id="charCount">0 / 4000</span>
+      </div>
+
+      <div class="row actions">
+        <button id="speakBtn" class="primary" type="button">▶ Speak</button>
+        <button id="stopBtn" class="ghost" type="button" disabled>■ Stop playback</button>
+        <button id="dlBtn" class="ghost" type="button" disabled>⬇ WAV</button>
+      </div>
+
+      <div class="progress"><div id="progBar"></div></div>
+      <div id="stats" class="stats muted tiny">ready</div>
+      <div id="speakErr" class="inline-err" hidden></div>
+    </div>
+
+    <!-- analysis -->
+    <div id="analyzeView" hidden>
+      <div class="row between">
+        <h2 id="analyzeTitle">Quality report</h2>
+        <button id="backBtn" class="ghost" type="button">← Back</button>
+      </div>
+
+      <div id="verdict" class="verdict"></div>
+
+      <div class="card">
+        <div class="row between">
+          <span class="lbl">Frequency content</span>
+          <span class="muted tiny" id="specNote"></span>
+        </div>
+        <canvas id="spectrum" height="120"></canvas>
+        <p class="muted tiny">
+          VoxCPM2 resamples every reference to 16&nbsp;kHz, so it only reads
+          0–8&nbsp;kHz. What matters is how much of that band the clip fills —
+          not the sample rate in its header.
+        </p>
+      </div>
+
+      <div class="card">
+        <span class="lbl">Waveform</span>
+        <canvas id="wave" height="70"></canvas>
+      </div>
+
+      <div id="checks" class="checks"></div>
+      <div id="metrics" class="metrics"></div>
+
+      <div id="commit" class="card commit">
+        <label class="lbl" for="voiceId">Voice id</label>
+        <input id="voiceId" type="text" placeholder="maria_48k" maxlength="48">
+        <p id="idNote" class="muted tiny">Letters, digits, _ and - only.</p>
+
+        <label class="lbl" for="transcript">Transcript <span class="muted">(optional)</span></label>
+        <textarea id="transcript" rows="2"
+          placeholder="Write what the clip actually says, verbatim."></textarea>
+        <p class="muted tiny">
+          Stored next to the clip as metadata. It does <strong>not</strong> affect
+          synthesis — this build passes only the audio to the model.
+        </p>
+
+        <label class="check"><input id="normalize" type="checkbox"> Normalise level to −3 dBFS</label>
+
+        <div class="row actions">
+          <button id="saveBtn" class="primary" type="button">Save voice</button>
+          <button id="reRecBtn" class="ghost" type="button" hidden>Record again</button>
+        </div>
+        <div id="saveErr" class="inline-err" hidden></div>
+      </div>
+    </div>
+
+    <!-- recording -->
+    <div id="recView" hidden>
+      <h2>Record a reference clip</h2>
+      <div class="rec-card">
+        <div id="recTime" class="rec-time">0.0 s</div>
+        <div class="meter"><div id="meterFill"></div></div>
+        <div class="row"><span id="recHint" class="muted tiny">Aim for 4–15 seconds.</span></div>
+        <p class="read-aloud">
+          “Buenas tardes, le llamo de parte de la oficina para confirmar su cita
+          del jueves a las tres de la tarde. ¿Le queda bien ese horario?”
+        </p>
+        <div class="row actions">
+          <button id="recStop" class="primary" type="button">■ Stop</button>
+          <button id="recCancel" class="ghost" type="button">Cancel</button>
+        </div>
+      </div>
+    </div>
+
+  </section>
+</main>
+
+<dialog id="keyDialog">
+  <form method="dialog">
+    <h3>API key required</h3>
+    <p class="muted tiny">This service has <code>LATINA_API_KEY</code> set.</p>
+    <input id="keyInput" type="password" placeholder="Bearer key" autocomplete="off">
+    <label class="check"><input id="keyRemember" type="checkbox"> Remember on this device</label>
+    <div id="keyErr" class="inline-err" hidden></div>
+    <div class="row actions">
+      <button value="ok" class="primary" type="submit">Use key</button>
+      <button value="cancel" class="ghost" type="submit">Cancel</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="confirmDialog">
+  <form method="dialog">
+    <h3 id="confirmTitle">Are you sure?</h3>
+    <p id="confirmBody" class="muted"></p>
+    <div class="row actions">
+      <button value="ok" class="danger" type="submit">Delete</button>
+      <button value="cancel" class="ghost" type="submit">Cancel</button>
+    </div>
+  </form>
+</dialog>
+
+<div id="toasts"></div>
+<script src="studio.js"></script>
+</body>
+</html>
